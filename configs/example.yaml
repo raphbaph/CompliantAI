@@ -1,0 +1,40 @@
+# Compliant Inference Gateway V1 example configuration.
+# Secret material is referenced by file path or environment variable; never inline it.
+version: 1
+
+server:
+  listen_address: "0.0.0.0:8443"
+  max_request_bytes: 1048576
+  max_response_bytes: 4194304
+  tls:
+    certificate_file: "/etc/compliantai/tls/server.crt"
+    private_key:
+      file: "/run/secrets/tls-private-key"
+
+database:
+  dsn:
+    env: "COMPLIANTAI_DATABASE_DSN"
+
+auth:
+  oidc:
+    issuer: "https://idp.customer.example"
+    audience: "compliant-ai-gateway"
+
+keys:
+  content_hmac:
+    file: "/run/secrets/content-hmac-key"
+  checkpoint_signing:
+    file: "/run/secrets/checkpoint-signing-key"
+
+backend:
+  # Plain HTTP is accepted without allow_insecure only for loopback backends.
+  base_url: "http://127.0.0.1:8000"
+  credential:
+    env: "COMPLIANTAI_BACKEND_CREDENTIAL"
+
+models:
+  - name: "local-legal"
+    backend_model: "qwen-local"
+    input_cost_micros_per_million_tokens: 1000
+    output_cost_micros_per_million_tokens: 2000
+    max_output_tokens: 2048

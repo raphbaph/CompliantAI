@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compliantai.example/schemas/config-v1.schema.json",
+  "title": "Compliant Inference Gateway V1 Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "server",
+    "database",
+    "auth",
+    "keys",
+    "backend",
+    "models"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "server": {
+      "$ref": "#/$defs/server"
+    },
+    "database": {
+      "$ref": "#/$defs/database"
+    },
+    "auth": {
+      "$ref": "#/$defs/auth"
+    },
+    "keys": {
+      "$ref": "#/$defs/keys"
+    },
+    "backend": {
+      "$ref": "#/$defs/backend"
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "x-runtime-constraints": [
+        "model names must be unique"
+      ],
+      "items": {
+        "$ref": "#/$defs/model"
+      }
+    }
+  },
+  "$defs": {
+    "secretRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file"],
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["env"],
+          "properties": {
+            "env": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
+        }
+      ]
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "listen_address",
+        "max_request_bytes",
+        "max_response_bytes",
+        "tls"
+      ],
+      "properties": {
+        "listen_address": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "max_request_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_response_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tls": {
+          "$ref": "#/$defs/tls"
+        }
+      }
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["certificate_file", "private_key"],
+      "properties": {
+        "certificate_file": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "private_key": {
+          "$ref": "#/$defs/secretRef"
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dsn"],
+      "properties": {
+        "dsn": {
+          "$ref": "#/$defs/secretRef"
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["oidc"],
+      "properties": {
+        "oidc": {
+          "$ref": "#/$defs/oidc"
+        }
+      }
+    },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "audience"],
+      "properties": {
+        "issuer": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1,
+          "pattern": "^https://[^/?#@\\s]+(?::[0-9]+)?(?:/[^?#\\s]*)?$"
+        },
+        "audience": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "keys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content_hmac", "checkpoint_signing"],
+      "properties": {
+        "content_hmac": {
+          "$ref": "#/$defs/secretRef"
+        },
+        "checkpoint_signing": {
+          "$ref": "#/$defs/secretRef"
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_url"],
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1
+        },
+        "credential": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/secretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allow_insecure": {
+          "type": ["boolean", "null"],
+          "default": false
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "base_url": {
+              "pattern": "^https://[^/?#@\\s]+(?::[0-9]+)?(?:/[^?#\\s]*)?$"
+            }
+          }
+        },
+        {
+          "properties": {
+            "base_url": {
+              "pattern": "^http://(?:localhost\\.?|127\\.0\\.0\\.1|\\[::1\\])(?::[0-9]+)?(?:/[^?#\\s]*)?$"
+            }
+          }
+        },
+        {
+          "required": ["allow_insecure"],
+          "properties": {
+            "base_url": {
+              "pattern": "^http://[^/?#@\\s]+(?::[0-9]+)?(?:/[^?#\\s]*)?$"
+            },
+            "allow_insecure": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "backend_model",
+        "input_cost_micros_per_million_tokens",
+        "output_cost_micros_per_million_tokens",
+        "max_output_tokens"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "backend_model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "input_cost_micros_per_million_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "output_cost_micros_per_million_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
