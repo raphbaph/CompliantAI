@@ -1,0 +1,42 @@
+services:
+  postgres:
+    build:
+      context: ..
+      dockerfile: deploy/postgres.Dockerfile
+    container_name: compliantai-postgres
+    environment:
+      POSTGRES_DB: compliantai
+      POSTGRES_USER: bootstrap_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_bootstrap_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust
+      GATEWAY_RUNTIME_PASSWORD_FILE: /run/secrets/gateway_runtime_password
+      AUDIT_READER_PASSWORD_FILE: /run/secrets/audit_reader_password
+      SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/security_admin_password
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    secrets:
+      - postgres_bootstrap_password
+      - gateway_runtime_password
+      - audit_reader_password
+      - security_admin_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+
+secrets:
+  postgres_bootstrap_password:
+    file: ${POSTGRES_BOOTSTRAP_PASSWORD_FILE:?set POSTGRES_BOOTSTRAP_PASSWORD_FILE}
+  gateway_runtime_password:
+    file: ${GATEWAY_RUNTIME_PASSWORD_FILE:?set GATEWAY_RUNTIME_PASSWORD_FILE}
+  audit_reader_password:
+    file: ${AUDIT_READER_PASSWORD_FILE:?set AUDIT_READER_PASSWORD_FILE}
+  security_admin_password:
+    file: ${SECURITY_ADMIN_PASSWORD_FILE:?set SECURITY_ADMIN_PASSWORD_FILE}
