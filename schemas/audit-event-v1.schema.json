@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compliantai.example/schemas/audit-event-v1.schema.json",
+  "title": "CompliantAI Content-Free Canonical Audit Event V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "run_id",
+    "event_type",
+    "occurred_at",
+    "principal_id",
+    "auth_method",
+    "oidc_issuer_hash",
+    "policy_version_hash",
+    "decision",
+    "decision_reason_codes",
+    "requested_model",
+    "resolved_backend",
+    "content_hmac_key_id",
+    "request_hmac",
+    "response_hmac",
+    "request_bytes",
+    "response_bytes",
+    "pii_categories",
+    "pii_match_counts",
+    "health_indicator_categories",
+    "secret_categories",
+    "detector_bundle_hash",
+    "input_tokens",
+    "output_tokens",
+    "reserved_cost_micros",
+    "actual_cost_micros",
+    "status",
+    "error_code",
+    "previous_event_hash",
+    "software_version",
+    "config_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "event_id": { "$ref": "#/$defs/uuid" },
+    "run_id": { "$ref": "#/$defs/uuid" },
+    "event_type": { "enum": ["run_started", "run_completed", "run_failed", "run_denied"] },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+    },
+    "principal_id": { "$ref": "#/$defs/uuid" },
+    "auth_method": { "enum": ["oidc", "api_key", "workload"] },
+    "oidc_issuer_hash": { "$ref": "#/$defs/nullableEvidenceDigest" },
+    "policy_version_hash": { "$ref": "#/$defs/evidenceDigest" },
+    "decision": { "enum": ["allow", "deny"] },
+    "decision_reason_codes": { "$ref": "#/$defs/codeSet" },
+    "requested_model": { "$ref": "#/$defs/identifier" },
+    "resolved_backend": { "$ref": "#/$defs/identifier" },
+    "content_hmac_key_id": { "$ref": "#/$defs/identifier" },
+    "request_hmac": { "$ref": "#/$defs/evidenceDigest" },
+    "response_hmac": { "$ref": "#/$defs/nullableEvidenceDigest" },
+    "request_bytes": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807 },
+    "response_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "pii_categories": { "$ref": "#/$defs/codeSet" },
+    "pii_match_counts": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "$ref": "#/$defs/code" },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9223372036854775807
+      }
+    },
+    "health_indicator_categories": { "$ref": "#/$defs/codeSet" },
+    "secret_categories": { "$ref": "#/$defs/codeSet" },
+    "detector_bundle_hash": { "$ref": "#/$defs/evidenceDigest" },
+    "input_tokens": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "output_tokens": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "reserved_cost_micros": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "actual_cost_micros": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+    "status": { "enum": ["started", "completed", "failed", "denied"] },
+    "error_code": {
+      "oneOf": [
+        { "$ref": "#/$defs/code" },
+        { "type": "null" }
+      ]
+    },
+    "previous_event_hash": { "$ref": "#/$defs/digest" },
+    "software_version": { "$ref": "#/$defs/identifier" },
+    "config_hash": { "$ref": "#/$defs/evidenceDigest" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "auth_method": { "const": "oidc" } } },
+      "then": { "properties": { "oidc_issuer_hash": { "$ref": "#/$defs/evidenceDigest" } } },
+      "else": { "properties": { "oidc_issuer_hash": { "type": "null" } } }
+    },
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "event_type": { "const": "run_started" },
+            "decision": { "const": "allow" },
+            "status": { "const": "started" }
+          }
+        },
+        {
+          "properties": {
+            "event_type": { "const": "run_completed" },
+            "decision": { "const": "allow" },
+            "status": { "const": "completed" }
+          }
+        },
+        {
+          "properties": {
+            "event_type": { "const": "run_failed" },
+            "decision": { "const": "allow" },
+            "status": { "const": "failed" }
+          }
+        },
+        {
+          "properties": {
+            "event_type": { "const": "run_denied" },
+            "decision": { "const": "deny" },
+            "status": { "const": "denied" }
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]{0,127}$"
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "codeSet": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/code" }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "evidenceDigest": {
+      "allOf": [
+        { "$ref": "#/$defs/digest" },
+        { "not": { "const": "0000000000000000000000000000000000000000000000000000000000000000" } }
+      ]
+    },
+    "nullableEvidenceDigest": {
+      "oneOf": [
+        { "$ref": "#/$defs/evidenceDigest" },
+        { "type": "null" }
+      ]
+    },
+    "nullableNonNegativeInteger": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0, "maximum": 9223372036854775807 },
+        { "type": "null" }
+      ]
+    }
+  }
+}

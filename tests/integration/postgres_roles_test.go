@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -12,12 +13,39 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/raphbaph/CompliantAI/internal/store"
 )
 
-const unregisteredAuditIdentifierCanary = "PROMPT-CONTENT-CANARY-4b91e2d7"
+const (
+	unregisteredAuditIdentifierCanary = "PROMPT-CONTENT-CANARY-4b91e2d7"
+	appendAuditEventSQL               = `SELECT append_audit_event(
+		$1::smallint, $2::uuid, $3::uuid, $4::text, $5::timestamptz, $6::uuid, $7::text,
+		$8::bytea, $9::bytea, $10::text, $11::text[], $12::text, $13::text, $14::text,
+		$15::bytea, $16::bytea, $17::bigint, $18::bigint, $19::text[], $20::jsonb,
+		$21::text[], $22::text[], $23::bytea, $24::bigint, $25::bigint, $26::bigint,
+		$27::bigint, $28::text, $29::text, $30::bytea, $31::bytea, $32::text, $33::bytea
+	)`
+	auditRowMatchesSQL = `SELECT ROW(
+		schema_version, event_id, run_id, event_type, occurred_at, principal_id, auth_method,
+		oidc_issuer_hash, policy_version_hash, decision, decision_reason_codes, requested_model,
+		resolved_backend, content_hmac_key_id, request_hmac, response_hmac, request_bytes,
+		response_bytes, pii_categories, pii_match_counts, health_indicator_categories,
+		secret_categories, detector_bundle_hash, input_tokens, output_tokens,
+		reserved_cost_micros, actual_cost_micros, status, error_code, previous_event_hash,
+		event_hash, software_version, config_hash
+	) IS NOT DISTINCT FROM ROW(
+		$2::smallint, $3::uuid, $4::uuid, $5::text, $6::timestamptz, $7::uuid, $8::text,
+		$9::bytea, $10::bytea, $11::text, $12::text[], $13::text, $14::text, $15::text,
+		$16::bytea, $17::bytea, $18::bigint, $19::bigint, $20::text[], $21::jsonb,
+		$22::text[], $23::text[], $24::bytea, $25::bigint, $26::bigint, $27::bigint,
+		$28::bigint, $29::text, $30::text, $31::bytea, $32::bytea, $33::text, $34::bytea
+	) FROM audit_events WHERE sequence = $1`
+)
+
+var auditFixtureOccurredAt = time.Date(2026, time.July, 24, 10, 0, 0, 123456000, time.UTC)
 
 func TestPostgresRoles(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -296,18 +324,21 @@ func TestPostgresRoles(t *testing.T) {
 		).Scan(&principalID); err != nil {
 			t.Fatalf("create audit principal: %v", err)
 		}
-		var runID string
-		if err := bootstrap.QueryRow(ctx, `SELECT gen_random_uuid()`).Scan(&runID); err != nil {
-			t.Fatalf("generate run ID: %v", err)
+		var eventID, runID string
+		if err := bootstrap.QueryRow(ctx, `SELECT gen_random_uuid(), gen_random_uuid()`).Scan(&eventID, &runID); err != nil {
+			t.Fatalf("generate event and run IDs: %v", err)
 		}
 
-		zeroHash := make([]byte, 32)
+		evidenceHash := make([]byte, 32)
+		evidenceHash[0] = 1
 		eventHash := make([]byte, 32)
 		eventHash[31] = 1
-		_, err := gateway.Exec(ctx, `SELECT append_audit_event(
-			$1::uuid, 'run_started', $2::uuid, 'oidc', 'allow', $3::text, 'unregistered-backend', 'started',
-			$4::bytea, $5::bytea, $6::bytea, $7::bytea, $8::bytea, 'unregistered-version', $9::bytea
-		)`, runID, principalID, unregisteredAuditIdentifierCanary, zeroHash, zeroHash, zeroHash, zeroHash, eventHash, zeroHash)
+		validMetadata := validAuditMetadataFixture(evidenceHash)
+		_, err := appendAuditFixture(
+			ctx, gateway, eventID, runID, principalID, "run_started", "allow", "started",
+			unregisteredAuditIdentifierCanary, "unregistered-backend", "unregistered-version",
+			"unregistered-content-key", evidenceHash, eventHash, validMetadata,
+		)
 		assertSQLStateMessage(t, err, "22023", "unregistered audit identifier")
 		var rejectedCount int
 		if err := auditReader.QueryRow(ctx,
@@ -323,6 +354,7 @@ func TestPostgresRoles(t *testing.T) {
 			"model":            "local-legal",
 			"backend":          "local-backend",
 			"software_version": "integration-test",
+			"content_hmac_key": "content-key-v1",
 		} {
 			if _, err := securityAdmin.Exec(ctx,
 				`SELECT admin_register_audit_identifier($1, $2)`, identifierType, identifierValue,
@@ -352,13 +384,114 @@ func TestPostgresRoles(t *testing.T) {
 					if decision == valid.decision && status == valid.status {
 						continue
 					}
-					_, err := gateway.Exec(ctx, `SELECT append_audit_event(
-						$1::uuid, $2::text, $3::uuid, 'oidc', $4::text, 'local-legal', 'local-backend', $5::text,
-						$6::bytea, $7::bytea, $8::bytea, $9::bytea, $10::bytea, 'integration-test', $11::bytea
-					)`, runID, eventType, principalID, decision, status, zeroHash, zeroHash, zeroHash, zeroHash, eventHash, zeroHash)
+					_, err := appendAuditFixture(
+						ctx, gateway, eventID, runID, principalID, eventType, decision, status,
+						"local-legal", "local-backend", "integration-test", "content-key-v1", evidenceHash, eventHash,
+						validMetadata,
+					)
 					assertSQLStateMessage(t, err, "22023", "invalid audit event state")
 				}
 			}
+		}
+
+		metadataRejections := []struct {
+			name   string
+			mutate func(*auditMetadataFixture)
+		}{
+			{name: "decision reason content", mutate: func(metadata *auditMetadataFixture) {
+				metadata.decisionReasonCodes = []string{unregisteredAuditIdentifierCanary}
+			}},
+			{name: "duplicate decision reason", mutate: func(metadata *auditMetadataFixture) {
+				metadata.decisionReasonCodes = []string{"policy_allowed", "policy_allowed"}
+			}},
+			{name: "oversized decision reasons", mutate: func(metadata *auditMetadataFixture) {
+				metadata.decisionReasonCodes = make([]string, 65)
+				for index := range metadata.decisionReasonCodes {
+					metadata.decisionReasonCodes[index] = fmt.Sprintf("reason_%d", index)
+				}
+			}},
+			{name: "PII category content", mutate: func(metadata *auditMetadataFixture) {
+				metadata.piiCategories = []string{unregisteredAuditIdentifierCanary}
+			}},
+			{name: "PII count key content", mutate: func(metadata *auditMetadataFixture) {
+				metadata.piiMatchCounts = map[string]any{unregisteredAuditIdentifierCanary: 1}
+			}},
+			{name: "negative PII count", mutate: func(metadata *auditMetadataFixture) { metadata.piiMatchCounts = map[string]any{"tax_id": -1} }},
+			{name: "noninteger PII count", mutate: func(metadata *auditMetadataFixture) { metadata.piiMatchCounts = map[string]any{"tax_id": "one"} }},
+			{name: "oversized PII count", mutate: func(metadata *auditMetadataFixture) {
+				metadata.piiMatchCounts = map[string]any{"tax_id": json.Number("9223372036854775808")}
+			}},
+			{name: "health category content", mutate: func(metadata *auditMetadataFixture) {
+				metadata.healthIndicatorCategories = []string{unregisteredAuditIdentifierCanary}
+			}},
+			{name: "secret category content", mutate: func(metadata *auditMetadataFixture) {
+				metadata.secretCategories = []string{unregisteredAuditIdentifierCanary}
+			}},
+			{name: "error code content", mutate: func(metadata *auditMetadataFixture) {
+				value := unregisteredAuditIdentifierCanary
+				metadata.errorCode = &value
+			}},
+		}
+		for _, rejection := range metadataRejections {
+			t.Run(rejection.name, func(t *testing.T) {
+				var rejectedEventID string
+				if err := bootstrap.QueryRow(ctx, `SELECT gen_random_uuid()`).Scan(&rejectedEventID); err != nil {
+					t.Fatalf("generate rejected event ID: %v", err)
+				}
+				metadata := validMetadata
+				rejection.mutate(&metadata)
+				_, err := appendAuditFixture(
+					ctx, gateway, rejectedEventID, runID, principalID, "run_completed", "allow", "completed",
+					"local-legal", "local-backend", "integration-test", "content-key-v1",
+					evidenceHash, eventHash, metadata,
+				)
+				assertSQLStateMessage(t, err, "22023", "invalid audit event metadata")
+				if strings.Contains(err.Error(), unregisteredAuditIdentifierCanary) {
+					t.Fatal("database error echoed rejected metadata")
+				}
+			})
+		}
+
+		arrayShapeRejections := []struct {
+			name  string
+			value pgtype.Array[string]
+		}{
+			{
+				name: "multidimensional decision reasons",
+				value: pgtype.Array[string]{
+					Elements: []string{"alpha", "beta", "gamma", "delta"},
+					Dims: []pgtype.ArrayDimension{
+						{Length: 2, LowerBound: 1},
+						{Length: 2, LowerBound: 1},
+					},
+					Valid: true,
+				},
+			},
+			{
+				name: "zero-based decision reasons",
+				value: pgtype.Array[string]{
+					Elements: []string{"alpha", "beta"},
+					Dims:     []pgtype.ArrayDimension{{Length: 2, LowerBound: 0}},
+					Valid:    true,
+				},
+			},
+		}
+		for _, rejection := range arrayShapeRejections {
+			t.Run(rejection.name, func(t *testing.T) {
+				var rejectedEventID string
+				if err := bootstrap.QueryRow(ctx, `SELECT gen_random_uuid()`).Scan(&rejectedEventID); err != nil {
+					t.Fatalf("generate rejected event ID: %v", err)
+				}
+				arguments := auditAppendArguments(
+					rejectedEventID, runID, principalID, "run_completed", "allow", "completed",
+					"local-legal", "local-backend", "integration-test", "content-key-v1",
+					evidenceHash, eventHash, validMetadata,
+				)
+				arguments[10] = rejection.value
+				var rejectedSequence int64
+				err := gateway.QueryRow(ctx, appendAuditEventSQL, arguments...).Scan(&rejectedSequence)
+				assertSQLStateMessage(t, err, "22023", "invalid audit event metadata")
+			})
 		}
 
 		for _, rolePool := range []*pgxpool.Pool{gateway, securityAdmin} {
@@ -368,21 +501,27 @@ func TestPostgresRoles(t *testing.T) {
 			assertSQLState(t, err, "42501")
 		}
 
-		var sequence int64
-		err = gateway.QueryRow(ctx, `SELECT append_audit_event(
-			$1::uuid, 'run_started', $2::uuid, 'oidc', 'allow', 'local-legal', 'local-backend', 'started',
-			$3::bytea, $4::bytea, $5::bytea, $6::bytea, $7::bytea, 'integration-test', $8::bytea
-		)`, runID, principalID, zeroHash, zeroHash, zeroHash, zeroHash, eventHash, zeroHash).Scan(&sequence)
+		sequence, err := appendAuditFixture(
+			ctx, gateway, eventID, runID, principalID, "run_completed", "allow", "completed",
+			"local-legal", "local-backend", "integration-test", "content-key-v1", evidenceHash, eventHash,
+			validMetadata,
+		)
 		if err != nil {
 			t.Fatalf("approved audit append: %v", err)
 		}
 
-		var count int
-		if err := auditReader.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE sequence = $1`, sequence).Scan(&count); err != nil {
-			t.Fatalf("audit reader select: %v", err)
+		arguments := auditAppendArguments(
+			eventID, runID, principalID, "run_completed", "allow", "completed",
+			"local-legal", "local-backend", "integration-test", "content-key-v1",
+			evidenceHash, eventHash, validMetadata,
+		)
+		matchArguments := append([]any{sequence}, arguments...)
+		var rowMatches bool
+		if err := auditReader.QueryRow(ctx, auditRowMatchesSQL, matchArguments...).Scan(&rowMatches); err != nil {
+			t.Fatalf("compare persisted canonical event: %v", err)
 		}
-		if count != 1 {
-			t.Fatalf("audit row count = %d, want 1", count)
+		if !rowMatches {
+			t.Fatal("persisted canonical event differs from supplied values")
 		}
 
 		_, err = gateway.Exec(ctx, `INSERT INTO audit_events (event_id) VALUES (gen_random_uuid())`)
@@ -542,6 +681,96 @@ func TestPostgresRoles(t *testing.T) {
 			}
 		}
 	})
+}
+
+type auditMetadataFixture struct {
+	decisionReasonCodes       []string
+	responseHMAC              []byte
+	requestBytes              int64
+	responseBytes             *int64
+	piiCategories             []string
+	piiMatchCounts            map[string]any
+	healthIndicatorCategories []string
+	secretCategories          []string
+	inputTokens               *int64
+	outputTokens              *int64
+	reservedCostMicros        *int64
+	actualCostMicros          *int64
+	errorCode                 *string
+}
+
+func validAuditMetadataFixture(evidenceHash []byte) auditMetadataFixture {
+	responseBytes := int64(256)
+	inputTokens := int64(12)
+	outputTokens := int64(8)
+	reservedCostMicros := int64(300)
+	actualCostMicros := int64(220)
+	return auditMetadataFixture{
+		decisionReasonCodes:       []string{"policy_allowed", "region_allowed"},
+		responseHMAC:              evidenceHash,
+		requestBytes:              128,
+		responseBytes:             &responseBytes,
+		piiCategories:             []string{"email_address", "tax_id"},
+		piiMatchCounts:            map[string]any{"email_address": int64(2), "tax_id": int64(1)},
+		healthIndicatorCategories: []string{"diagnosis_indicator", "medication_indicator"},
+		secretCategories:          []string{"api_credential", "private_key"},
+		inputTokens:               &inputTokens,
+		outputTokens:              &outputTokens,
+		reservedCostMicros:        &reservedCostMicros,
+		actualCostMicros:          &actualCostMicros,
+	}
+}
+
+func auditAppendArguments(
+	eventID string,
+	runID string,
+	principalID string,
+	eventType string,
+	decision string,
+	status string,
+	model string,
+	backend string,
+	softwareVersion string,
+	contentHMACKeyID string,
+	evidenceHash []byte,
+	eventHash []byte,
+	metadata auditMetadataFixture,
+) []any {
+	return []any{
+		int16(1), eventID, runID, eventType, auditFixtureOccurredAt, principalID, "oidc",
+		evidenceHash, evidenceHash, decision, metadata.decisionReasonCodes, model, backend, contentHMACKeyID,
+		evidenceHash, metadata.responseHMAC, metadata.requestBytes, metadata.responseBytes,
+		metadata.piiCategories, metadata.piiMatchCounts, metadata.healthIndicatorCategories,
+		metadata.secretCategories, evidenceHash, metadata.inputTokens, metadata.outputTokens,
+		metadata.reservedCostMicros, metadata.actualCostMicros, status, metadata.errorCode,
+		evidenceHash, eventHash, softwareVersion, evidenceHash,
+	}
+}
+
+func appendAuditFixture(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	eventID string,
+	runID string,
+	principalID string,
+	eventType string,
+	decision string,
+	status string,
+	model string,
+	backend string,
+	softwareVersion string,
+	contentHMACKeyID string,
+	evidenceHash []byte,
+	eventHash []byte,
+	metadata auditMetadataFixture,
+) (int64, error) {
+	arguments := auditAppendArguments(
+		eventID, runID, principalID, eventType, decision, status, model, backend,
+		softwareVersion, contentHMACKeyID, evidenceHash, eventHash, metadata,
+	)
+	var sequence int64
+	err := pool.QueryRow(ctx, appendAuditEventSQL, arguments...).Scan(&sequence)
+	return sequence, err
 }
 
 func assertSQLState(t *testing.T, err error, want string) {
