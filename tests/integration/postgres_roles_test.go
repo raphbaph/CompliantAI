@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/raphbaph/CompliantAI/internal/audit"
 	"github.com/raphbaph/CompliantAI/internal/store"
 )
 
@@ -337,7 +338,7 @@ func TestPostgresRoles(t *testing.T) {
 		_, err := appendAuditFixture(
 			ctx, gateway, eventID, runID, principalID, "run_started", "allow", "started",
 			unregisteredAuditIdentifierCanary, "unregistered-backend", "unregistered-version",
-			"unregistered-content-key", evidenceHash, eventHash, validMetadata,
+			"unregistered-content-key", evidenceHash, evidenceHash, eventHash, validMetadata,
 		)
 		assertSQLStateMessage(t, err, "22023", "unregistered audit identifier")
 		var rejectedCount int
@@ -386,7 +387,7 @@ func TestPostgresRoles(t *testing.T) {
 					}
 					_, err := appendAuditFixture(
 						ctx, gateway, eventID, runID, principalID, eventType, decision, status,
-						"local-legal", "local-backend", "integration-test", "content-key-v1", evidenceHash, eventHash,
+						"local-legal", "local-backend", "integration-test", "content-key-v1", evidenceHash, evidenceHash, eventHash,
 						validMetadata,
 					)
 					assertSQLStateMessage(t, err, "22023", "invalid audit event state")
@@ -443,7 +444,7 @@ func TestPostgresRoles(t *testing.T) {
 				_, err := appendAuditFixture(
 					ctx, gateway, rejectedEventID, runID, principalID, "run_completed", "allow", "completed",
 					"local-legal", "local-backend", "integration-test", "content-key-v1",
-					evidenceHash, eventHash, metadata,
+					evidenceHash, evidenceHash, eventHash, metadata,
 				)
 				assertSQLStateMessage(t, err, "22023", "invalid audit event metadata")
 				if strings.Contains(err.Error(), unregisteredAuditIdentifierCanary) {
@@ -485,7 +486,7 @@ func TestPostgresRoles(t *testing.T) {
 				arguments := auditAppendArguments(
 					rejectedEventID, runID, principalID, "run_completed", "allow", "completed",
 					"local-legal", "local-backend", "integration-test", "content-key-v1",
-					evidenceHash, eventHash, validMetadata,
+					evidenceHash, evidenceHash, eventHash, validMetadata,
 				)
 				arguments[10] = rejection.value
 				var rejectedSequence int64
@@ -501,9 +502,24 @@ func TestPostgresRoles(t *testing.T) {
 			assertSQLState(t, err, "42501")
 		}
 
+		var currentHead []byte
+		if err := gateway.QueryRow(ctx, `SELECT event_hash FROM lock_audit_chain_head()`).Scan(&currentHead); err != nil {
+			t.Fatalf("read current audit chain head: %v", err)
+		}
+		canonicalEvent := canonicalAuditFixture(
+			eventID, runID, principalID, "run_completed", "allow", "completed",
+			"local-legal", "local-backend", "integration-test", "content-key-v1",
+			evidenceHash, currentHead, validMetadata,
+		)
+		computedEventHash, err := audit.EventHash(canonicalEvent)
+		if err != nil {
+			t.Fatalf("hash approved canonical audit event: %v", err)
+		}
+		eventHash = append([]byte(nil), computedEventHash[:]...)
+
 		sequence, err := appendAuditFixture(
 			ctx, gateway, eventID, runID, principalID, "run_completed", "allow", "completed",
-			"local-legal", "local-backend", "integration-test", "content-key-v1", evidenceHash, eventHash,
+			"local-legal", "local-backend", "integration-test", "content-key-v1", evidenceHash, currentHead, eventHash,
 			validMetadata,
 		)
 		if err != nil {
@@ -513,7 +529,7 @@ func TestPostgresRoles(t *testing.T) {
 		arguments := auditAppendArguments(
 			eventID, runID, principalID, "run_completed", "allow", "completed",
 			"local-legal", "local-backend", "integration-test", "content-key-v1",
-			evidenceHash, eventHash, validMetadata,
+			evidenceHash, currentHead, eventHash, validMetadata,
 		)
 		matchArguments := append([]any{sequence}, arguments...)
 		var rowMatches bool
@@ -721,6 +737,74 @@ func validAuditMetadataFixture(evidenceHash []byte) auditMetadataFixture {
 	}
 }
 
+func canonicalAuditFixture(
+	eventID string,
+	runID string,
+	principalID string,
+	eventType string,
+	decision string,
+	status string,
+	model string,
+	backend string,
+	softwareVersion string,
+	contentHMACKeyID string,
+	evidenceHash []byte,
+	previousEventHash []byte,
+	metadata auditMetadataFixture,
+) audit.Event {
+	evidence := auditDigestFixture(evidenceHash)
+	previous := auditDigestFixture(previousEventHash)
+	response := auditDigestFixture(metadata.responseHMAC)
+	counts := make(map[string]int64, len(metadata.piiMatchCounts))
+	for category, rawCount := range metadata.piiMatchCounts {
+		count, ok := rawCount.(int64)
+		if !ok {
+			panic("canonical audit fixture requires int64 PII counts")
+		}
+		counts[category] = count
+	}
+	return audit.Event{
+		SchemaVersion:             1,
+		EventID:                   eventID,
+		RunID:                     runID,
+		EventType:                 audit.EventType(eventType),
+		OccurredAt:                auditFixtureOccurredAt,
+		PrincipalID:               principalID,
+		AuthMethod:                audit.AuthOIDC,
+		OIDCIssuerHash:            &evidence,
+		PolicyVersionHash:         evidence,
+		Decision:                  audit.Decision(decision),
+		DecisionReasonCodes:       metadata.decisionReasonCodes,
+		RequestedModel:            model,
+		ResolvedBackend:           backend,
+		ContentHMACKeyID:          contentHMACKeyID,
+		RequestHMAC:               evidence,
+		ResponseHMAC:              &response,
+		RequestBytes:              metadata.requestBytes,
+		ResponseBytes:             metadata.responseBytes,
+		PIICategories:             metadata.piiCategories,
+		PIIMatchCounts:            counts,
+		HealthIndicatorCategories: metadata.healthIndicatorCategories,
+		SecretCategories:          metadata.secretCategories,
+		DetectorBundleHash:        evidence,
+		InputTokens:               metadata.inputTokens,
+		OutputTokens:              metadata.outputTokens,
+		ReservedCostMicros:        metadata.reservedCostMicros,
+		ActualCostMicros:          metadata.actualCostMicros,
+		Status:                    audit.Status(status),
+		ErrorCode:                 metadata.errorCode,
+		PreviousEventHash:         previous,
+		SoftwareVersion:           softwareVersion,
+		ConfigHash:                evidence,
+	}
+}
+
+func auditDigestFixture(raw []byte) audit.Digest {
+	var digest audit.Digest
+	copy(digest[:], raw)
+	return digest
+}
+
 func auditAppendArguments(
 	eventID string,
 	runID string,
@@ -733,6 +817,7 @@ func auditAppendArguments(
 	softwareVersion string,
 	contentHMACKeyID string,
 	evidenceHash []byte,
+	previousEventHash []byte,
 	eventHash []byte,
 	metadata auditMetadataFixture,
 ) []any {
@@ -743,7 +828,7 @@ func auditAppendArguments(
 		metadata.piiCategories, metadata.piiMatchCounts, metadata.healthIndicatorCategories,
 		metadata.secretCategories, evidenceHash, metadata.inputTokens, metadata.outputTokens,
 		metadata.reservedCostMicros, metadata.actualCostMicros, status, metadata.errorCode,
-		evidenceHash, eventHash, softwareVersion, evidenceHash,
+		previousEventHash, eventHash, softwareVersion, evidenceHash,
 	}
 }
 
@@ -761,12 +846,13 @@ func appendAuditFixture(
 	softwareVersion string,
 	contentHMACKeyID string,
 	evidenceHash []byte,
+	previousEventHash []byte,
 	eventHash []byte,
 	metadata auditMetadataFixture,
 ) (int64, error) {
 	arguments := auditAppendArguments(
 		eventID, runID, principalID, eventType, decision, status, model, backend,
-		softwareVersion, contentHMACKeyID, evidenceHash, eventHash, metadata,
+		softwareVersion, contentHMACKeyID, evidenceHash, previousEventHash, eventHash, metadata,
 	)
 	var sequence int64
 	err := pool.QueryRow(ctx, appendAuditEventSQL, arguments...).Scan(&sequence)
