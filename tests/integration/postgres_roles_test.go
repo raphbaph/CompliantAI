@@ -616,6 +616,28 @@ func TestPostgresRoles(t *testing.T) {
 		); err != nil {
 			t.Fatalf("audited identifier administration: %v", err)
 		}
+		var checkpointSequence int64
+		var checkpointHead []byte
+		if err := auditedAdmin.QueryRow(ctx,
+			`SELECT sequence, event_hash FROM get_audit_chain_head()`,
+		).Scan(&checkpointSequence, &checkpointHead); err != nil {
+			t.Fatalf("audited checkpoint head read: %v", err)
+		}
+		checkpointSignature := make([]byte, 64)
+		for index := range checkpointSignature {
+			checkpointSignature[index] = 0xa7
+		}
+		checkpointKeyID := fmt.Sprintf("checkpoint-audit-%d", time.Now().UnixNano())
+		if _, err := auditedAdmin.Exec(ctx,
+			`SELECT store_audit_checkpoint($1, $2, $3, $4, $5)`,
+			checkpointSequence,
+			checkpointHead,
+			checkpointKeyID,
+			checkpointSignature,
+			time.Now().UTC().Truncate(time.Microsecond),
+		); err != nil {
+			t.Fatalf("audited checkpoint persistence: %v", err)
+		}
 
 		const contentCanary = "DB-LOG-CONTENT-CANARY-7f2e91d4"
 		_, err = gateway.Exec(ctx,
@@ -643,6 +665,8 @@ func TestPostgresRoles(t *testing.T) {
 			"admin_create_api_key",
 			"admin_set_budget",
 			"admin_register_audit_identifier",
+			"get_audit_chain_head",
+			"store_audit_checkpoint",
 		} {
 			if !strings.Contains(taggedAdminAudit.String(), functionName) {
 				t.Fatalf("tagged pgaudit records do not contain successful call to %s", functionName)
@@ -653,7 +677,7 @@ func TestPostgresRoles(t *testing.T) {
 				t.Fatalf("PostgreSQL logs do not contain %q", expected)
 			}
 		}
-		for _, canary := range []string{contentCanary, unregisteredAuditIdentifierCanary, auditedVerifierCanary} {
+		for _, canary := range []string{contentCanary, unregisteredAuditIdentifierCanary, auditedVerifierCanary, checkpointKeyID} {
 			if strings.Contains(logs, canary) {
 				t.Fatal("PostgreSQL logs contain bound content canary")
 			}

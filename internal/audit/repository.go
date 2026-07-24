@@ -15,6 +15,10 @@ var (
 	ErrAppend = errors.New("audit append failed")
 	// ErrRead reports a failed audit read without database details.
 	ErrRead = errors.New("audit read failed")
+	// ErrCheckpointStore reports a failed checkpoint write without database details.
+	ErrCheckpointStore = errors.New("audit checkpoint store failed")
+	// ErrCheckpointRead reports a failed checkpoint or chain-head read without database details.
+	ErrCheckpointRead = errors.New("audit checkpoint read failed")
 )
 
 const (
@@ -26,7 +30,7 @@ const (
 		$21::text[], $22::text[], $23::bytea, $24::bigint, $25::bigint, $26::bigint,
 		$27::bigint, $28::text, $29::text, $30::bytea, $31::bytea, $32::text, $33::bytea
 	)`
-	selectAuditRecordsSQL = `SELECT
+	selectAuditRecordColumnsSQL = `SELECT
 		sequence, schema_version, event_id::text, run_id::text, event_type, occurred_at,
 		principal_id::text, auth_method, oidc_issuer_hash, policy_version_hash, decision,
 		decision_reason_codes, requested_model, resolved_backend, content_hmac_key_id,
@@ -34,13 +38,24 @@ const (
 		pii_match_counts, health_indicator_categories, secret_categories, detector_bundle_hash,
 		input_tokens, output_tokens, reserved_cost_micros, actual_cost_micros, status,
 		error_code, previous_event_hash, event_hash, software_version, config_hash
-	FROM audit_events
-	ORDER BY sequence`
+	FROM audit_events`
+	selectAuditRecordsSQL        = selectAuditRecordColumnsSQL + ` ORDER BY sequence`
+	selectAuditRecordsThroughSQL = selectAuditRecordColumnsSQL + ` WHERE sequence <= $1 ORDER BY sequence`
+	readCheckpointHeadSQL        = `SELECT sequence, event_hash FROM get_audit_chain_head()`
+	storeCheckpointSQL           = `SELECT store_audit_checkpoint($1::bigint, $2::bytea, $3::text, $4::bytea, $5::timestamptz)`
+	loadCheckpointSQL            = `SELECT sequence, chain_head_hash, signing_key_id, signature, created_at
+		FROM audit_checkpoints WHERE sequence = $1`
 )
 
 // Repository persists and verifies content-free audit events.
 type Repository struct {
 	pool *pgxpool.Pool
+}
+
+// ChainHead is the minimal content-free state required to create a checkpoint.
+type ChainHead struct {
+	Sequence  int64
+	EventHash Digest
 }
 
 // AppendReceipt proves that an audit append committed successfully.
@@ -122,14 +137,109 @@ func (repository *Repository) Append(ctx context.Context, event Event) (AppendRe
 	}, nil
 }
 
+// ChainHead reads the current chain head through the approved checkpoint administration API.
+func (repository *Repository) ChainHead(ctx context.Context) (ChainHead, error) {
+	if repository == nil || repository.pool == nil {
+		return ChainHead{}, ErrCheckpointRead
+	}
+	var head ChainHead
+	var rawHash []byte
+	if err := repository.pool.QueryRow(ctx, readCheckpointHeadSQL).Scan(&head.Sequence, &rawHash); err != nil {
+		return ChainHead{}, ErrCheckpointRead
+	}
+	digest, ok := digestFromBytes(rawHash)
+	if !ok || head.Sequence <= 0 || digest == (Digest{}) {
+		return ChainHead{}, ErrCheckpointRead
+	}
+	head.EventHash = digest
+	return head, nil
+}
+
+// StoreCheckpoint persists one signed checkpoint through the approved administration API.
+func (repository *Repository) StoreCheckpoint(ctx context.Context, checkpoint Checkpoint) error {
+	if repository == nil || repository.pool == nil || len(checkpoint.Signature) != 64 {
+		return ErrCheckpointStore
+	}
+	if _, err := canonicalCheckpointPayload(checkpoint); err != nil || checkpoint.ChainHeadHash == (Digest{}) {
+		return ErrCheckpointStore
+	}
+	if _, err := repository.pool.Exec(
+		ctx,
+		storeCheckpointSQL,
+		checkpoint.Sequence,
+		checkpoint.ChainHeadHash[:],
+		checkpoint.SigningKeyID,
+		checkpoint.Signature,
+		checkpoint.CreatedAt,
+	); err != nil {
+		return ErrCheckpointStore
+	}
+	return nil
+}
+
+// LoadCheckpoint reads one persisted checkpoint without requiring database write access.
+func (repository *Repository) LoadCheckpoint(ctx context.Context, sequence int64) (Checkpoint, error) {
+	if repository == nil || repository.pool == nil || sequence <= 0 {
+		return Checkpoint{}, ErrCheckpointRead
+	}
+	checkpoint := Checkpoint{SchemaVersion: 1}
+	var rawHash []byte
+	if err := repository.pool.QueryRow(ctx, loadCheckpointSQL, sequence).Scan(
+		&checkpoint.Sequence,
+		&rawHash,
+		&checkpoint.SigningKeyID,
+		&checkpoint.Signature,
+		&checkpoint.CreatedAt,
+	); err != nil {
+		return Checkpoint{}, ErrCheckpointRead
+	}
+	digest, ok := digestFromBytes(rawHash)
+	if !ok || digest == (Digest{}) || len(checkpoint.Signature) != 64 {
+		return Checkpoint{}, ErrCheckpointRead
+	}
+	checkpoint.ChainHeadHash = digest
+	checkpoint.CreatedAt = checkpoint.CreatedAt.UTC()
+	if _, err := canonicalCheckpointPayload(checkpoint); err != nil {
+		return Checkpoint{}, ErrCheckpointRead
+	}
+	checkpoint.Signature = append([]byte(nil), checkpoint.Signature...)
+	return checkpoint, nil
+}
+
+// RecordsThrough reads and verifies a complete chain ending at the requested checkpoint sequence.
+func (repository *Repository) RecordsThrough(ctx context.Context, sequence int64) ([]Record, error) {
+	if repository == nil || repository.pool == nil || sequence <= 0 {
+		return nil, ErrRead
+	}
+	records, err := repository.readRecords(ctx, selectAuditRecordsThroughSQL, sequence)
+	if err != nil {
+		return nil, err
+	}
+	if err := VerifyChain(records); err != nil {
+		return nil, err
+	}
+	if len(records) == 0 || records[len(records)-1].Sequence != sequence {
+		return nil, &VerificationError{Sequence: int64(len(records) + 1)}
+	}
+	return records, nil
+}
+
 // Verify reads the ordered audit history and verifies sequence and hash-chain integrity.
 func (repository *Repository) Verify(ctx context.Context) error {
 	if repository == nil || repository.pool == nil {
 		return ErrRead
 	}
-	rows, err := repository.pool.Query(ctx, selectAuditRecordsSQL)
+	records, err := repository.readRecords(ctx, selectAuditRecordsSQL)
 	if err != nil {
-		return ErrRead
+		return err
+	}
+	return VerifyChain(records)
+}
+
+func (repository *Repository) readRecords(ctx context.Context, query string, arguments ...any) ([]Record, error) {
+	rows, err := repository.pool.Query(ctx, query, arguments...)
+	if err != nil {
+		return nil, ErrRead
 	}
 	defer rows.Close()
 
@@ -138,16 +248,16 @@ func (repository *Repository) Verify(ctx context.Context) error {
 		record, scanErr := scanRecord(rows)
 		if scanErr != nil {
 			if record.Sequence > 0 {
-				return &VerificationError{Sequence: record.Sequence}
+				return nil, &VerificationError{Sequence: record.Sequence}
 			}
-			return ErrRead
+			return nil, ErrRead
 		}
 		records = append(records, record)
 	}
 	if rows.Err() != nil {
-		return ErrRead
+		return nil, ErrRead
 	}
-	return VerifyChain(records)
+	return records, nil
 }
 
 func appendArguments(event Event, eventHash Digest) []any {
