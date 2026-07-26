@@ -195,25 +195,68 @@ Do not introduce fields named or serving the purpose of:
 
 A fixed enum such as `error_code = backend_timeout` is permitted. A free-form backend error is not.
 
-## 7. Detector finding schema
+## 7. Detector finding schema and V1 detector inventory
 
 Each finding is reduced before persistence to:
 
 ```json
 {
-  "category": "pii.iban",
+  "category": "iban",
   "count": 1,
-  "rule_id": "iban-checksum-v1"
+  "rule_id": "iban_checksum_v1"
 }
 ```
 
 Rules:
 
-- `category` and `rule_id` are server-defined enums.
+- `category` and `rule_id` are server-defined enums matching the audit code pattern `^[a-z][a-z0-9_]{0,63}$`.
 - `count` is a non-negative bounded integer.
 - Findings are aggregated by category/rule.
 - No matched value, hash of an individual match, location, offset, or context is retained.
 - “Health data” detections are labelled indicators, not legal conclusions.
+- V1 detectors are intentionally incomplete structured heuristics. They do not establish legal personal-data or health-data status and do not claim semantic completeness.
+
+### V1 supported categories
+
+| Class | Category | Rule ID | Notes |
+| --- | --- | --- | --- |
+| PII | `email_address` | `email_basic_v1` | Basic email-shape matches |
+| PII | `phone_number` | `phone_e164_de_at_v1` | `+49` / `+43` (or `00`) E.164-like forms |
+| PII | `iban` | `iban_checksum_v1` | DE/AT lengths with ISO 13616 MOD-97; invalid checksums ignored |
+| Health indicator | `diagnosis_indicator` | `health_diagnosis_terms_v1` | EN/DE whole-word indicator terms |
+| Health indicator | `medication_indicator` | `health_medication_terms_v1` | EN/DE whole-word indicator terms |
+| Health indicator | `icd_code` | `health_icd_shape_v1` | ICD-marked or dotted ICD-like codes |
+| Secret | `api_credential` | `secret_api_token_shape_v1` | `sk-…`, `cai_api_v1.…`, `AKIA…` shapes |
+| Secret | `private_key` | `secret_pem_private_key_v1` | PEM private-key blocks |
+| Secret | `jwt_shape` | `secret_jwt_shape_v1` | Three-segment compact JWT shape |
+
+Audit projection:
+
+- PII → `pii_categories` + `pii_match_counts`
+- Health → `health_indicator_categories` (presence)
+- Secrets → `secret_categories` (presence)
+- Bundle → `detector_bundle_hash` (`detect-bundle-v1` digest)
+
+### Operational bounds
+
+- Input must be valid UTF-8 without NUL bytes.
+- Maximum detector input size: 1 MiB (`detect.MaxInputBytes`).
+- Classification runs only in process memory for the request lifetime.
+- Detector errors are fixed (`detector input invalid`, `detector input too large`) and must never echo input bytes.
+
+### False-positive posture
+
+Documented regressions include:
+
+- the word “email” without an address;
+- short numeric room numbers that are not E.164 DE/AT phones;
+- bare codes like `E11` without ICD marker or dotted form;
+- two-segment JWT-like tokens;
+- IBAN-shaped values with invalid MOD-97 checksums or unsupported country lengths.
+
+### Fixtures
+
+Synthetic German/Austrian samples live under `tests/fixtures/detect/` and are fabricated for automated tests only.
 
 ## 8. Content digests and canonical evidence
 

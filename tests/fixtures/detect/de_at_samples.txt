@@ -1,0 +1,12 @@
+# Synthetic German/Austrian detector fixtures.
+# Values are fabricated for tests only and must not be treated as real personal data.
+
+Kontakt E-Mail: erika.musterfrau@example.de
+Zweite Mail: office@kanzlei-beispiel.at
+Telefon DE: +49 170 1122334
+Telefon AT: +43 699 11223344
+IBAN DE: DE89 3704 0044 0532 0130 00
+IBAN AT: AT61 1904 3002 3457 3201
+Diagnose: arterielle Hypertonie
+Medikation: Bisoprolol 5 mg
+API: sk-demoFIXTUREONLY000000000000
