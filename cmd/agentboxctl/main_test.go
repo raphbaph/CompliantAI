@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,26 @@ import (
 	"time"
 
 	"github.com/raphbaph/CompliantAI/internal/audit"
+	"github.com/raphbaph/CompliantAI/internal/auth"
 )
+
+type failingOutputWriter struct{}
+
+func (failingOutputWriter) Write([]byte) (int, error) {
+	return 0, errors.New("output failure canary")
+}
+
+type apiKeyCreatorStub struct {
+	publishErr error
+}
+
+func (stub *apiKeyCreatorStub) CreateAndPublishAPIKey(_ context.Context, _ string, _ time.Time, publish func(string, string) error) error {
+	stub.publishErr = publish(strings.Repeat("a", 32), "output-failure-test-bearer")
+	if stub.publishErr != nil {
+		return auth.ErrAPIKeyAdministration
+	}
+	return nil
+}
 
 func TestRunVerifyAcceptsSignedExport(t *testing.T) {
 	exportPath, publicKeyPath := writeVerificationFixtures(t)
@@ -109,6 +129,45 @@ func TestTask8FileReadersRejectSymlinks(t *testing.T) {
 	if secret, err := readSecretFile(link); err == nil {
 		clear(secret)
 		t.Fatal("secret reader accepted symlink")
+	}
+}
+
+func TestRunAPIKeyCreateRejectsInvalidArgumentsWithoutEchoingThem(t *testing.T) {
+	const canary = "API-KEY-CLI-CANARY-secret"
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run(context.Background(), []string{
+		"api-key", "create",
+		"--dsn-file", canary,
+		"--principal-id", "invalid",
+		"--expires-at", "invalid",
+	}, &stdout, &stderr)
+	if exitCode != 1 {
+		t.Fatalf("run(api-key create) exit = %d, want 1", exitCode)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("run(api-key create) stdout = %q, want empty", stdout.String())
+	}
+	if stderr.String() != "API key creation failed\n" {
+		t.Fatalf("run(api-key create) stderr = %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), canary) {
+		t.Fatal("API-key creation error echoed an argument")
+	}
+}
+
+func TestAPIKeyCLIPropagatesOutputFailuresToTransactionalCreation(t *testing.T) {
+	creator := &apiKeyCreatorStub{}
+	err := createAndPublishAPIKey(context.Background(), creator, "00000000-0000-4000-8000-000000000019", time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond), failingOutputWriter{})
+	if err != auth.ErrAPIKeyAdministration {
+		t.Fatalf("createAndPublishAPIKey() error = %v, want exact ErrAPIKeyAdministration", err)
+	}
+	if creator.publishErr == nil || !strings.Contains(creator.publishErr.Error(), "output failure canary") {
+		t.Fatalf("transactional publish error = %v, want output failure", creator.publishErr)
+	}
+	if err := writeAPIKeyDisableConfirmation(failingOutputWriter{}, strings.Repeat("a", 32)); err == nil || !strings.Contains(err.Error(), "output failure canary") {
+		t.Fatalf("disable confirmation error = %v, want output failure", err)
 	}
 }
 

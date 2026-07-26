@@ -119,6 +119,8 @@ func TestPostgresRoles(t *testing.T) {
 			"admin_disable_api_key":           "security_admin",
 			"admin_set_budget":                "security_admin",
 			"admin_register_audit_identifier": "security_admin",
+			"lookup_api_key_auth":             "gateway_runtime",
+			"mark_api_key_used":               "gateway_runtime",
 			"append_audit_event":              "gateway_runtime",
 		}
 		for functionName, authorizedRole := range functions {
@@ -208,13 +210,8 @@ func TestPostgresRoles(t *testing.T) {
 			t.Fatalf("approved principal creation: %v", err)
 		}
 
-		var status string
-		if err := gateway.QueryRow(ctx, `SELECT status FROM principals WHERE id = $1`, principalID).Scan(&status); err != nil {
-			t.Fatalf("gateway reads principal: %v", err)
-		}
-		if status != "active" {
-			t.Fatalf("principal status = %q, want active", status)
-		}
+		_, err = gateway.Exec(ctx, `SELECT status FROM principals WHERE id = $1`, principalID)
+		assertSQLState(t, err, "42501")
 
 		_, err = gateway.Exec(ctx, `INSERT INTO principals (id, status) VALUES (gen_random_uuid(), 'active')`)
 		assertSQLState(t, err, "42501")
@@ -238,7 +235,7 @@ func TestPostgresRoles(t *testing.T) {
 		).Scan(&principalID); err != nil {
 			t.Fatalf("create API-key principal: %v", err)
 		}
-		keyID := fmt.Sprintf("key-%d", time.Now().UnixNano())
+		keyID := fmt.Sprintf("%032x", time.Now().UnixNano())
 		verifier := "hmac-sha256:" + strings.Repeat("a", 64)
 		if _, err := securityAdmin.Exec(ctx,
 			`SELECT admin_create_api_key($1, $2, $3::uuid, statement_timestamp() + interval '1 day')`,
@@ -246,26 +243,46 @@ func TestPostgresRoles(t *testing.T) {
 		); err != nil {
 			t.Fatalf("create API key through admin function: %v", err)
 		}
+		_, err := securityAdmin.Exec(ctx,
+			`SELECT admin_create_api_key($1, $2, $3::uuid, statement_timestamp() + interval '1 day')`,
+			keyID, verifier, principalID,
+		)
+		assertSQLStateMessage(t, err, "22023", "API key administration failed")
+		_, err = securityAdmin.Exec(ctx,
+			`SELECT admin_create_api_key($1, $2, $3::uuid, NULL::timestamptz)`,
+			strings.Repeat("b", 32), verifier, principalID,
+		)
+		assertSQLStateMessage(t, err, "22023", "API key administration failed")
+		_, err = securityAdmin.Exec(ctx,
+			`SELECT admin_create_api_key($1, $2, $3::uuid, 'infinity'::timestamptz)`,
+			strings.Repeat("c", 32), verifier, principalID,
+		)
+		assertSQLStateMessage(t, err, "22023", "API key administration failed")
 
 		var storedVerifier string
 		var disabled bool
 		if err := gateway.QueryRow(ctx,
-			`SELECT secret_verifier, disabled_at IS NOT NULL FROM api_keys WHERE key_id = $1`, keyID,
+			`SELECT secret_verifier, disabled FROM lookup_api_key_auth($1)`, keyID,
 		).Scan(&storedVerifier, &disabled); err != nil {
-			t.Fatalf("gateway reads API key verifier: %v", err)
+			t.Fatalf("gateway reads API key verifier through approved function: %v", err)
 		}
 		if storedVerifier != verifier || disabled {
 			t.Fatalf("unexpected API key state after creation")
 		}
-		_, err := securityAdmin.Exec(ctx, `UPDATE api_keys SET disabled_at = statement_timestamp() WHERE key_id = $1`, keyID)
+		_, err = gateway.Exec(ctx, `SELECT secret_verifier FROM api_keys WHERE key_id = $1`, keyID)
+		assertSQLState(t, err, "42501")
+		_, err = securityAdmin.Exec(ctx, `UPDATE api_keys SET disabled_at = statement_timestamp() WHERE key_id = $1`, keyID)
 		assertSQLState(t, err, "42501")
 		if _, err := securityAdmin.Exec(ctx, `SELECT admin_disable_api_key($1)`, keyID); err != nil {
 			t.Fatalf("disable API key through admin function: %v", err)
 		}
+		if _, err := securityAdmin.Exec(ctx, `SELECT admin_disable_api_key($1)`, keyID); err != nil {
+			t.Fatalf("repeat API-key disable should be idempotent: %v", err)
+		}
 		if err := gateway.QueryRow(ctx,
-			`SELECT disabled_at IS NOT NULL FROM api_keys WHERE key_id = $1`, keyID,
+			`SELECT disabled FROM lookup_api_key_auth($1)`, keyID,
 		).Scan(&disabled); err != nil {
-			t.Fatalf("gateway reads disabled API key: %v", err)
+			t.Fatalf("gateway reads disabled API key through approved function: %v", err)
 		}
 		if !disabled {
 			t.Fatal("API key remains enabled after controlled disable")
@@ -598,7 +615,7 @@ func TestPostgresRoles(t *testing.T) {
 		).Scan(&auditedPrincipalID); err != nil {
 			t.Fatalf("audited principal administration: %v", err)
 		}
-		auditedKeyID := fmt.Sprintf("audit-key-%d", time.Now().UnixNano())
+		auditedKeyID := fmt.Sprintf("%032x", time.Now().UnixNano())
 		const auditedVerifierCanary = "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 		if _, err := auditedAdmin.Exec(ctx,
 			`SELECT admin_create_api_key($1, $2, $3::uuid, statement_timestamp() + interval '1 day')`,

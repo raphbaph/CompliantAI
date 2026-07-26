@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"regexp"
 	"sync"
 	"time"
 )
@@ -32,6 +33,11 @@ const (
 
 // ErrWrite is returned when a structured event cannot be written.
 var ErrWrite = errors.New("safe log write failed")
+
+var (
+	principalIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	keyIDPrefixPattern = regexp.MustCompile(`^[0-9a-f]{8}$`)
+)
 
 // Logger writes schema-bound content-free operational events as JSON Lines.
 type Logger struct {
@@ -62,6 +68,20 @@ func (logger *Logger) BackendFailure(code BackendErrorCode) error {
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Event:     "backend_failure",
 		Code:      string(normalizeBackendCode(code)),
+	})
+}
+
+// APIKeyAuthenticationSuccess records only bounded non-secret API-key identity evidence.
+func (logger *Logger) APIKeyAuthenticationSuccess(principalID, keyIDPrefix string) error {
+	if !principalIDPattern.MatchString(principalID) || !keyIDPrefixPattern.MatchString(keyIDPrefix) {
+		return ErrWrite
+	}
+	return logger.writeAuthenticationSuccess(authenticationSuccessEvent{
+		Timestamp:   time.Now().UTC().Format(time.RFC3339Nano),
+		Event:       "authentication_success",
+		AuthMethod:  "api_key",
+		PrincipalID: principalID,
+		KeyIDPrefix: keyIDPrefix,
 	})
 }
 
@@ -97,6 +117,14 @@ type errorEvent struct {
 	Code      string `json:"code"`
 }
 
+type authenticationSuccessEvent struct {
+	Timestamp   string `json:"timestamp"`
+	Event       string `json:"event"`
+	AuthMethod  string `json:"auth_method"`
+	PrincipalID string `json:"principal_id"`
+	KeyIDPrefix string `json:"key_id_prefix"`
+}
+
 func (logger *Logger) write(event errorEvent) error {
 	if logger == nil || logger.encoder == nil {
 		return ErrWrite
@@ -105,6 +133,18 @@ func (logger *Logger) write(event errorEvent) error {
 	logger.mu.Lock()
 	defer logger.mu.Unlock()
 
+	if err := logger.encoder.Encode(event); err != nil {
+		return ErrWrite
+	}
+	return nil
+}
+
+func (logger *Logger) writeAuthenticationSuccess(event authenticationSuccessEvent) error {
+	if logger == nil || logger.encoder == nil {
+		return ErrWrite
+	}
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
 	if err := logger.encoder.Encode(event); err != nil {
 		return ErrWrite
 	}

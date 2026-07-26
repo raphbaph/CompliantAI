@@ -33,6 +33,42 @@ func TestBackendFailureEmitsApprovedFields(t *testing.T) {
 	assertErrorEvent(t, output.Bytes(), "backend_failure", "timeout")
 }
 
+func TestAPIKeyAuthenticationSuccessEmitsOnlyApprovedIdentityFields(t *testing.T) {
+	var output bytes.Buffer
+	logger := New(&output)
+	const principalID = "00000000-0000-4000-8000-000000000011"
+	const keyIDPrefix = "a1b2c3d4"
+	const secretCanary = "cai_api_v1.a1b2c3d4.API-KEY-CANARY-secret"
+
+	if err := logger.APIKeyAuthenticationSuccess(principalID, keyIDPrefix); err != nil {
+		t.Fatalf("APIKeyAuthenticationSuccess() error = %v", err)
+	}
+	if strings.Contains(output.String(), secretCanary) || strings.Contains(output.String(), "secret_verifier") {
+		t.Fatal("authentication success log contains credential material")
+	}
+	var event map[string]any
+	if err := json.Unmarshal(output.Bytes(), &event); err != nil {
+		t.Fatalf("decode authentication event: %v", err)
+	}
+	want := map[string]any{
+		"event":         "authentication_success",
+		"auth_method":   "api_key",
+		"principal_id":  principalID,
+		"key_id_prefix": keyIDPrefix,
+	}
+	if len(event) != len(want)+1 {
+		t.Fatalf("authentication event fields = %#v", event)
+	}
+	for key, value := range want {
+		if event[key] != value {
+			t.Fatalf("authentication event %s = %#v, want %#v", key, event[key], value)
+		}
+	}
+	if _, err := time.Parse(time.RFC3339Nano, event["timestamp"].(string)); err != nil {
+		t.Fatalf("authentication timestamp: %v", err)
+	}
+}
+
 func TestConcurrentWritesProduceCompleteJSONLines(t *testing.T) {
 	const eventCount = 64
 	var output bytes.Buffer
@@ -91,21 +127,27 @@ func TestUninitializedLoggerReturnsErrWrite(t *testing.T) {
 
 func TestLoggerExposesOnlyTypedEventMethods(t *testing.T) {
 	loggerType := reflect.TypeOf((*Logger)(nil))
-	wantMethods := map[string]reflect.Type{
-		"AuthorizationFailure": reflect.TypeOf(AuthorizationErrorCode("")),
-		"BackendFailure":       reflect.TypeOf(BackendErrorCode("")),
+	wantMethods := map[string][]reflect.Type{
+		"AuthorizationFailure":        {reflect.TypeOf(AuthorizationErrorCode(""))},
+		"BackendFailure":              {reflect.TypeOf(BackendErrorCode(""))},
+		"APIKeyAuthenticationSuccess": {reflect.TypeOf(""), reflect.TypeOf("")},
 	}
 
 	if loggerType.NumMethod() != len(wantMethods) {
 		t.Fatalf("Logger exported method count = %d, want %d", loggerType.NumMethod(), len(wantMethods))
 	}
-	for name, wantArgument := range wantMethods {
+	for name, wantArguments := range wantMethods {
 		method, exists := loggerType.MethodByName(name)
 		if !exists {
 			t.Fatalf("Logger method %q is missing", name)
 		}
-		if method.Type.NumIn() != 2 || method.Type.In(1) != wantArgument {
-			t.Fatalf("Logger.%s input signature = %v, want one %v argument", name, method.Type, wantArgument)
+		if method.Type.NumIn() != len(wantArguments)+1 {
+			t.Fatalf("Logger.%s input signature = %v", name, method.Type)
+		}
+		for index, wantArgument := range wantArguments {
+			if method.Type.In(index+1) != wantArgument {
+				t.Fatalf("Logger.%s input %d = %v, want %v", name, index, method.Type.In(index+1), wantArgument)
+			}
 		}
 		if method.Type.NumOut() != 1 || method.Type.Out(0) != reflect.TypeOf((*error)(nil)).Elem() {
 			t.Fatalf("Logger.%s output signature = %v, want error", name, method.Type)

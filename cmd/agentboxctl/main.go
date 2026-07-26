@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/raphbaph/CompliantAI/internal/audit"
+	"github.com/raphbaph/CompliantAI/internal/auth"
 	"github.com/raphbaph/CompliantAI/internal/version"
 )
 
@@ -46,10 +47,109 @@ func run(ctx context.Context, arguments []string, stdout io.Writer, stderr io.Wr
 		return runExport(ctx, arguments[1:], stdout, stderr)
 	case "verify":
 		return runVerify(ctx, arguments[1:], stdout, stderr)
+	case "api-key":
+		return runAPIKey(ctx, arguments[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintln(stderr, "unknown agentboxctl command")
 		return 2
 	}
+}
+
+func runAPIKey(ctx context.Context, arguments []string, stdout io.Writer, stderr io.Writer) int {
+	if len(arguments) == 0 {
+		_, _ = fmt.Fprintln(stderr, "API key command failed")
+		return 1
+	}
+	switch arguments[0] {
+	case "create":
+		return runAPIKeyCreate(ctx, arguments[1:], stdout, stderr)
+	case "disable":
+		return runAPIKeyDisable(ctx, arguments[1:], stdout, stderr)
+	default:
+		_, _ = fmt.Fprintln(stderr, "API key command failed")
+		return 1
+	}
+}
+
+func runAPIKeyCreate(ctx context.Context, arguments []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("api-key create", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	dsnPath := flags.String("dsn-file", "", "security-admin PostgreSQL DSN file")
+	principalID := flags.String("principal-id", "", "principal UUID")
+	expiresAtText := flags.String("expires-at", "", "UTC RFC3339 API-key expiry")
+	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 || *dsnPath == "" || *principalID == "" || *expiresAtText == "" {
+		_, _ = fmt.Fprintln(stderr, "API key creation failed")
+		return 1
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, *expiresAtText)
+	if err != nil || expiresAt.Location() != time.UTC || expiresAt.Year() < 1 || expiresAt.Year() > 9999 || expiresAt.Nanosecond()%1000 != 0 {
+		_, _ = fmt.Fprintln(stderr, "API key creation failed")
+		return 1
+	}
+	store, closeStore, err := openAPIKeyStore(ctx, *dsnPath)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "API key creation failed")
+		return 1
+	}
+	defer closeStore()
+	if err := createAndPublishAPIKey(ctx, store, *principalID, expiresAt, stdout); err != nil {
+		_, _ = fmt.Fprintln(stderr, "API key creation failed")
+		return 1
+	}
+	return 0
+}
+
+type apiKeyCreator interface {
+	CreateAndPublishAPIKey(context.Context, string, time.Time, func(string, string) error) error
+}
+
+func createAndPublishAPIKey(ctx context.Context, creator apiKeyCreator, principalID string, expiresAt time.Time, stdout io.Writer) error {
+	if creator == nil || stdout == nil {
+		return auth.ErrAPIKeyAdministration
+	}
+	return creator.CreateAndPublishAPIKey(ctx, principalID, expiresAt, func(keyID, bearer string) error {
+		return json.NewEncoder(stdout).Encode(struct {
+			KeyID     string `json:"key_id"`
+			Bearer    string `json:"bearer"`
+			ExpiresAt string `json:"expires_at"`
+		}{KeyID: keyID, Bearer: bearer, ExpiresAt: expiresAt.Format(time.RFC3339Nano)})
+	})
+}
+
+func runAPIKeyDisable(ctx context.Context, arguments []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("api-key disable", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	dsnPath := flags.String("dsn-file", "", "security-admin PostgreSQL DSN file")
+	keyID := flags.String("key-id", "", "API-key public identifier")
+	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 || *dsnPath == "" || *keyID == "" {
+		_, _ = fmt.Fprintln(stderr, "API key disable failed")
+		return 1
+	}
+	store, closeStore, err := openAPIKeyStore(ctx, *dsnPath)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "API key disable failed")
+		return 1
+	}
+	defer closeStore()
+	if err := store.DisableAPIKey(ctx, *keyID); err != nil {
+		_, _ = fmt.Fprintln(stderr, "API key disable failed")
+		return 1
+	}
+	if err := writeAPIKeyDisableConfirmation(stdout, *keyID); err != nil {
+		_, _ = fmt.Fprintln(stderr, "API key disable failed")
+		return 1
+	}
+	return 0
+}
+
+func writeAPIKeyDisableConfirmation(stdout io.Writer, keyID string) error {
+	if stdout == nil {
+		return os.ErrInvalid
+	}
+	return json.NewEncoder(stdout).Encode(struct {
+		KeyID    string `json:"key_id"`
+		Disabled bool   `json:"disabled"`
+	}{KeyID: keyID, Disabled: true})
 }
 
 func runCheckpoint(ctx context.Context, arguments []string, stdout io.Writer, stderr io.Writer) int {
@@ -207,6 +307,24 @@ func openAuditRepository(ctx context.Context, dsnPath string) (*audit.Repository
 		return nil, func() {}, os.ErrInvalid
 	}
 	return repository, pool.Close, nil
+}
+
+func openAPIKeyStore(ctx context.Context, dsnPath string) (*auth.PostgresAPIKeyStore, func(), error) {
+	dsn, err := readSecretFile(dsnPath)
+	if err != nil {
+		return nil, func() {}, os.ErrInvalid
+	}
+	defer clear(dsn)
+	pool, err := pgxpool.New(ctx, string(dsn))
+	if err != nil {
+		return nil, func() {}, os.ErrInvalid
+	}
+	store, err := auth.NewPostgresAPIKeyStore(pool)
+	if err != nil {
+		pool.Close()
+		return nil, func() {}, os.ErrInvalid
+	}
+	return store, pool.Close, nil
 }
 
 func readSecretFile(path string) ([]byte, error) {
