@@ -27,6 +27,9 @@ auth:
   oidc:
     issuer: "https://idp.example.com"
     audience: "compliant-ai"
+    jwks_url: "https://idp.example.com/jwks"
+    jwks_cache_ttl_seconds: 300
+    group_claim: "groups"
 keys:
   content_hmac:
     file: "/run/secrets/content-hmac-key"
@@ -92,6 +95,9 @@ func TestLoadRejectsMissingRequiredFields(t *testing.T) {
 		{name: "database DSN", old: `env: "COMPLIANTAI_DATABASE_DSN"`, replacement: `env: ""`, wantField: "database.dsn"},
 		{name: "OIDC issuer", old: `issuer: "https://idp.example.com"`, replacement: `issuer: ""`, wantField: "auth.oidc.issuer"},
 		{name: "OIDC audience", old: `audience: "compliant-ai"`, replacement: `audience: ""`, wantField: "auth.oidc.audience"},
+		{name: "OIDC JWKS URL", old: `jwks_url: "https://idp.example.com/jwks"`, replacement: `jwks_url: ""`, wantField: "auth.oidc.jwks_url"},
+		{name: "OIDC JWKS TTL", old: `jwks_cache_ttl_seconds: 300`, replacement: `jwks_cache_ttl_seconds: 0`, wantField: "auth.oidc.jwks_cache_ttl_seconds"},
+		{name: "OIDC group claim", old: `group_claim: "groups"`, replacement: `group_claim: ""`, wantField: "auth.oidc.group_claim"},
 		{name: "content HMAC key", old: `file: "/run/secrets/content-hmac-key"`, replacement: `file: ""`, wantField: "keys.content_hmac"},
 		{name: "checkpoint signing key", old: `file: "/run/secrets/checkpoint-signing-key"`, replacement: `file: ""`, wantField: "keys.checkpoint_signing"},
 		{name: "backend", old: `base_url: "http://127.0.0.1:8000"`, replacement: `base_url: ""`, wantField: "backend.base_url"},

@@ -3,10 +3,13 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
 const supportedVersion = 1
+
+var oidcGroupClaimNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_./-]{0,63}$`)
 
 // FieldError reports a configuration problem without rendering its value.
 type FieldError struct {
@@ -49,6 +52,21 @@ func Validate(cfg Config) error {
 	}
 	if blank(cfg.Auth.OIDC.Audience) {
 		return required("auth.oidc.audience")
+	}
+	if blank(cfg.Auth.OIDC.JWKSURL) {
+		return required("auth.oidc.jwks_url")
+	}
+	if err := validateOIDCJWKSURL(cfg.Auth.OIDC.JWKSURL); err != nil {
+		return err
+	}
+	if cfg.Auth.OIDC.JWKSCacheTTLSeconds <= 0 || cfg.Auth.OIDC.JWKSCacheTTLSeconds > 86400 {
+		return invalid("auth.oidc.jwks_cache_ttl_seconds", "must be between 1 and 86400")
+	}
+	if blank(cfg.Auth.OIDC.GroupClaim) {
+		return required("auth.oidc.group_claim")
+	}
+	if !oidcGroupClaimNamePattern.MatchString(cfg.Auth.OIDC.GroupClaim) {
+		return invalid("auth.oidc.group_claim", "must be a bounded claim name")
 	}
 	if err := validateSecretRef("keys.content_hmac", cfg.Keys.ContentHMAC, true); err != nil {
 		return err
@@ -105,6 +123,17 @@ func validateOIDCIssuer(issuer string) error {
 	}
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return invalid("auth.oidc.issuer", "must not contain credentials, a query, or a fragment")
+	}
+	return nil
+}
+
+func validateOIDCJWKSURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Hostname() == "" || !strings.HasPrefix(raw, "https://") {
+		return invalid("auth.oidc.jwks_url", "must be an absolute HTTPS URL")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return invalid("auth.oidc.jwks_url", "must not contain credentials, a query, or a fragment")
 	}
 	return nil
 }

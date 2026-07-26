@@ -39,8 +39,11 @@ type AuthConfig struct {
 
 // OIDCConfig identifies the customer identity provider and expected audience.
 type OIDCConfig struct {
-	Issuer   string `yaml:"issuer" json:"issuer"`
-	Audience string `yaml:"audience" json:"audience"`
+	Issuer              string `yaml:"issuer" json:"issuer"`
+	Audience            string `yaml:"audience" json:"audience"`
+	JWKSURL             string `yaml:"jwks_url" json:"jwks_url"`
+	JWKSCacheTTLSeconds int    `yaml:"jwks_cache_ttl_seconds" json:"jwks_cache_ttl_seconds"`
+	GroupClaim          string `yaml:"group_claim" json:"group_claim"`
 }
 
 // KeyConfig keeps content evidence and audit signing keys separate.

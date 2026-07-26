@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,9 +16,10 @@ import (
 const (
 	lookupAPIKeySQL = `SELECT key_id, secret_verifier, principal_id::text, principal_active, expires_at, disabled
 		FROM lookup_api_key_auth($1::text)`
-	markAPIKeyUsedSQL = `SELECT mark_api_key_used($1::text, $2::uuid)`
-	createAPIKeySQL   = `SELECT admin_create_api_key($1::text, $2::text, $3::uuid, $4::timestamptz)`
-	disableAPIKeySQL  = `SELECT admin_disable_api_key($1::text)`
+	markAPIKeyUsedSQL      = `SELECT mark_api_key_used($1::text, $2::uuid)`
+	createAPIKeySQL        = `SELECT admin_create_api_key($1::text, $2::text, $3::uuid, $4::timestamptz)`
+	disableAPIKeySQL       = `SELECT admin_disable_api_key($1::text)`
+	lookupOIDCPrincipalSQL = `SELECT principal_id::text, principal_active FROM lookup_oidc_principal($1::text, $2::text)`
 )
 
 var (
@@ -135,4 +137,26 @@ func (store *PostgresAPIKeyStore) DisableAPIKey(ctx context.Context, keyID strin
 		return ErrAPIKeyAdministration
 	}
 	return nil
+}
+
+// LookupOIDCPrincipal resolves a validated issuer/subject pair through the runtime function.
+func (store *PostgresAPIKeyStore) LookupOIDCPrincipal(ctx context.Context, issuer, subject string) (OIDCPrincipalRecord, error) {
+	if store == nil || store.pool == nil || issuer == "" || subject == "" || len(issuer) > 512 || len(subject) > maxOIDCSubjectBytes {
+		return OIDCPrincipalRecord{}, ErrAuthenticationUnavailable
+	}
+	if strings.ContainsAny(issuer, "\r\n\x00") || strings.ContainsAny(subject, "\r\n\x00") {
+		return OIDCPrincipalRecord{}, ErrAuthenticationUnavailable
+	}
+	var record OIDCPrincipalRecord
+	err := store.pool.QueryRow(ctx, lookupOIDCPrincipalSQL, issuer, subject).Scan(&record.ID, &record.Active)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OIDCPrincipalRecord{}, ErrOIDCPrincipalNotFound
+	}
+	if err != nil {
+		return OIDCPrincipalRecord{}, ErrAuthenticationUnavailable
+	}
+	if !principalUUIDPattern.MatchString(record.ID) {
+		return OIDCPrincipalRecord{}, ErrAuthenticationUnavailable
+	}
+	return record, nil
 }

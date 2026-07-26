@@ -140,7 +140,7 @@
     "oidc": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["issuer", "audience"],
+      "required": ["issuer", "audience", "jwks_url", "jwks_cache_ttl_seconds", "group_claim"],
       "properties": {
         "issuer": {
           "type": "string",
@@ -152,6 +152,23 @@
           "type": "string",
           "minLength": 1,
           "pattern": "\\S"
+        },
+        "jwks_url": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1,
+          "pattern": "^https://[^/?#@\\s]+(?::[0-9]+)?(?:/[^?#\\s]*)?$"
+        },
+        "jwks_cache_ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "group_claim": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_./-]{0,63}$"
         }
       }
     },

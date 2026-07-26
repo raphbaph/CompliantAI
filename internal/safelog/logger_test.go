@@ -69,6 +69,43 @@ func TestAPIKeyAuthenticationSuccessEmitsOnlyApprovedIdentityFields(t *testing.T
 	}
 }
 
+func TestOIDCAuthenticationSuccessEmitsOnlyApprovedIdentityFields(t *testing.T) {
+	var output bytes.Buffer
+	logger := New(&output)
+	const principalID = "00000000-0000-4000-8000-000000000031"
+	const claimCanary = "JWT-CLAIM-CANARY-email@example.com"
+
+	if err := logger.OIDCAuthenticationSuccess(principalID); err != nil {
+		t.Fatalf("OIDCAuthenticationSuccess() error = %v", err)
+	}
+	if strings.Contains(output.String(), claimCanary) || strings.Contains(output.String(), "eyJ") {
+		t.Fatal("OIDC authentication success log contains claim or token material")
+	}
+	var event map[string]any
+	if err := json.Unmarshal(output.Bytes(), &event); err != nil {
+		t.Fatalf("decode authentication event: %v", err)
+	}
+	want := map[string]any{
+		"event":        "authentication_success",
+		"auth_method":  "oidc",
+		"principal_id": principalID,
+	}
+	if len(event) != len(want)+1 {
+		t.Fatalf("authentication event fields = %#v", event)
+	}
+	for key, value := range want {
+		if event[key] != value {
+			t.Fatalf("authentication event %s = %#v, want %#v", key, event[key], value)
+		}
+	}
+	if _, hasKeyPrefix := event["key_id_prefix"]; hasKeyPrefix {
+		t.Fatalf("OIDC event unexpectedly includes key_id_prefix: %#v", event)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, event["timestamp"].(string)); err != nil {
+		t.Fatalf("authentication timestamp: %v", err)
+	}
+}
+
 func TestConcurrentWritesProduceCompleteJSONLines(t *testing.T) {
 	const eventCount = 64
 	var output bytes.Buffer
@@ -131,6 +168,7 @@ func TestLoggerExposesOnlyTypedEventMethods(t *testing.T) {
 		"AuthorizationFailure":        {reflect.TypeOf(AuthorizationErrorCode(""))},
 		"BackendFailure":              {reflect.TypeOf(BackendErrorCode(""))},
 		"APIKeyAuthenticationSuccess": {reflect.TypeOf(""), reflect.TypeOf("")},
+		"OIDCAuthenticationSuccess":   {reflect.TypeOf("")},
 	}
 
 	if loggerType.NumMethod() != len(wantMethods) {

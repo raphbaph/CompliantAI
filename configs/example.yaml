@@ -19,6 +19,9 @@ auth:
   oidc:
     issuer: "https://idp.customer.example"
     audience: "compliant-ai-gateway"
+    jwks_url: "https://idp.customer.example/jwks"
+    jwks_cache_ttl_seconds: 300
+    group_claim: "groups"
 
 keys:
   content_hmac:

@@ -1,0 +1,6 @@
+# Local runtime secrets and ephemeral test artifacts (never commit).
+.hermes/docker-secrets/
+*.pem
+*.key
+.env
+.env.*

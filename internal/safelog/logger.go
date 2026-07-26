@@ -85,6 +85,19 @@ func (logger *Logger) APIKeyAuthenticationSuccess(principalID, keyIDPrefix strin
 	})
 }
 
+// OIDCAuthenticationSuccess records only the bounded principal identifier for OIDC success.
+func (logger *Logger) OIDCAuthenticationSuccess(principalID string) error {
+	if !principalIDPattern.MatchString(principalID) {
+		return ErrWrite
+	}
+	return logger.writeAuthenticationSuccess(authenticationSuccessEvent{
+		Timestamp:   time.Now().UTC().Format(time.RFC3339Nano),
+		Event:       "authentication_success",
+		AuthMethod:  "oidc",
+		PrincipalID: principalID,
+	})
+}
+
 func normalizeAuthorizationCode(code AuthorizationErrorCode) AuthorizationErrorCode {
 	switch code {
 	case AuthMissingCredentials,
@@ -122,7 +135,7 @@ type authenticationSuccessEvent struct {
 	Event       string `json:"event"`
 	AuthMethod  string `json:"auth_method"`
 	PrincipalID string `json:"principal_id"`
-	KeyIDPrefix string `json:"key_id_prefix"`
+	KeyIDPrefix string `json:"key_id_prefix,omitempty"`
 }
 
 func (logger *Logger) write(event errorEvent) error {
