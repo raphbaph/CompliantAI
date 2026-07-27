@@ -116,6 +116,23 @@ docker run --rm --read-only --cap-drop=ALL --security-opt no-new-privileges:true
 
 Any mandatory failure exits non-zero. There is no ignore-all flag.
 
+## Live integration test environment
+
+Integration and some demo steps need the compose Postgres roles. Example after `docker-compose -f deploy/compose.yaml up -d` (postgres only by default):
+
+```bash
+# Passwords must match the secret files used at compose up.
+export TEST_BOOTSTRAP_DSN='postgres://bootstrap_admin:PASSWORD@127.0.0.1:55432/compliantai?sslmode=disable'
+export TEST_GATEWAY_DSN='postgres://gateway_runtime:PASSWORD@127.0.0.1:55432/compliantai?sslmode=disable'
+export TEST_AUDIT_READER_DSN='postgres://audit_reader:PASSWORD@127.0.0.1:55432/compliantai?sslmode=disable'
+export TEST_SECURITY_ADMIN_DSN='postgres://security_admin:PASSWORD@127.0.0.1:55432/compliantai?sslmode=disable'
+export TEST_POSTGRES_CONTAINER=compliantai-postgres
+
+go test ./tests/integration ./tests/canary -v
+```
+
+Do not commit real passwords or DSNs. Prefer reading password files into the DSN in a local shell only.
+
 ## Verification commands
 
 ```bash
