@@ -14,9 +14,10 @@ func TestPrincipalValidateAcceptsAPIKeyAndOIDCShapes(t *testing.T) {
 	}
 
 	oidc := Principal{
-		ID:         "00000000-0000-4000-8000-000000000002",
-		AuthMethod: AuthMethodOIDC,
-		Groups:     []string{"legal-reviewers", "medical-readers"},
+		ID:             "00000000-0000-4000-8000-000000000002",
+		AuthMethod:     AuthMethodOIDC,
+		Groups:         []string{"legal-reviewers", "medical-readers"},
+		OIDCIssuerHash: [32]byte{1},
 	}
 	if err := oidc.Validate(); err != nil {
 		t.Fatalf("OIDC principal Validate() error = %v", err)
@@ -25,27 +26,36 @@ func TestPrincipalValidateAcceptsAPIKeyAndOIDCShapes(t *testing.T) {
 
 func TestPrincipalValidateRejectsInvalidOIDCShapes(t *testing.T) {
 	tests := []Principal{
-		{ID: "not-a-uuid", AuthMethod: AuthMethodOIDC},
+		{ID: "not-a-uuid", AuthMethod: AuthMethodOIDC, OIDCIssuerHash: [32]byte{1}},
 		{ID: "00000000-0000-4000-8000-000000000003", AuthMethod: AuthMethod("jwt")},
 		{
 			ID:             "00000000-0000-4000-8000-000000000004",
 			AuthMethod:     AuthMethodOIDC,
 			APIKeyIDPrefix: "abcdef01",
+			OIDCIssuerHash: [32]byte{1},
 		},
 		{
-			ID:         "00000000-0000-4000-8000-000000000005",
-			AuthMethod: AuthMethodOIDC,
-			Groups:     []string{"bad group with spaces"},
+			ID:             "00000000-0000-4000-8000-000000000005",
+			AuthMethod:     AuthMethodOIDC,
+			Groups:         []string{"bad group with spaces"},
+			OIDCIssuerHash: [32]byte{1},
 		},
 		{
-			ID:         "00000000-0000-4000-8000-000000000006",
-			AuthMethod: AuthMethodOIDC,
-			Groups:     []string{"ok", "ok"},
+			ID:             "00000000-0000-4000-8000-000000000006",
+			AuthMethod:     AuthMethodOIDC,
+			Groups:         []string{"ok", "ok"},
+			OIDCIssuerHash: [32]byte{1},
 		},
 		{
 			ID:         "00000000-0000-4000-8000-000000000007",
 			AuthMethod: AuthMethodAPIKey,
 			Groups:     []string{"should-not-exist"},
+		},
+		{
+			ID:         "00000000-0000-4000-8000-000000000008",
+			AuthMethod: AuthMethodOIDC,
+			Groups:     []string{},
+			// missing OIDCIssuerHash
 		},
 	}
 	for index, principal := range tests {

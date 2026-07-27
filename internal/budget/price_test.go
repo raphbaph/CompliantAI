@@ -54,12 +54,27 @@ func TestEstimateMaxCostCeilPartialMicros(t *testing.T) {
 		OutputMicrosPerMillion: 3,
 		MaxOutputTokens:        1,
 	}
-	// 1 token * 3 / 1e6 => 1 micro after ceiling
 	got, err := budget.EstimateMaxCostMicros(price, 1)
 	if err != nil {
-		t.Fatalf("error = %v", err)
+		t.Fatalf("EstimateMaxCostMicros: %v", err)
 	}
-	if got != 2 { // 1 input + 1 output
+	// ceil(3/1e6)=1 each leg => 2
+	if got != 2 {
+		t.Fatalf("got %d, want 2", got)
+	}
+}
+
+func TestActualCostAllowsZeroCompletionTokens(t *testing.T) {
+	price := budget.ModelPrice{
+		InputMicrosPerMillion:  1_000_000,
+		OutputMicrosPerMillion: 2_000_000,
+		MaxOutputTokens:        128,
+	}
+	got, err := budget.ActualCostMicros(price, 2, 0)
+	if err != nil {
+		t.Fatalf("ActualCostMicros: %v", err)
+	}
+	if got != 2 {
 		t.Fatalf("got %d, want 2", got)
 	}
 }

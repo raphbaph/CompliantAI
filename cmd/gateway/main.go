@@ -11,6 +11,7 @@ import (
 
 func main() {
 	showVersion := flag.Bool("version", false, "print build metadata as JSON")
+	configPath := flag.String("config", "", "path to gateway configuration YAML (server wiring lands with full deployment bootstrap)")
 	flag.Parse()
 
 	if *showVersion {
@@ -21,6 +22,14 @@ func main() {
 		return
 	}
 
-	fmt.Fprintln(os.Stderr, "gateway server is not implemented yet")
+	if *configPath != "" {
+		// Full process bootstrap (TLS, DB pools, OIDC/JWKS, secrets) is assembled in
+		// deployment follow-up. The HTTP vertical slice lives in internal/api and is
+		// covered by package tests with injected collaborators.
+		fmt.Fprintln(os.Stderr, "gateway process bootstrap is not fully wired; use internal/api tests for the vertical slice")
+		os.Exit(2)
+	}
+
+	fmt.Fprintln(os.Stderr, "usage: gateway --version | --config PATH")
 	os.Exit(2)
 }

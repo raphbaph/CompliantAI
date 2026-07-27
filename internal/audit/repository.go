@@ -80,6 +80,16 @@ func (receipt AppendReceipt) AuthorizesBackendCall() bool {
 	return receipt.backendAuthorized
 }
 
+// NewAppendReceipt builds a receipt for a successfully committed event.
+// Used by the repository and by test/fake auditors that already validated the commit.
+func NewAppendReceipt(sequence int64, eventHash Digest, eventType EventType) AppendReceipt {
+	return AppendReceipt{
+		sequence:          sequence,
+		eventHash:         eventHash,
+		backendAuthorized: eventType == EventRunStarted && sequence > 0 && eventHash != (Digest{}),
+	}
+}
+
 // NewRepository binds audit persistence to an existing PostgreSQL pool.
 func NewRepository(pool *pgxpool.Pool) (*Repository, error) {
 	if pool == nil {
@@ -130,11 +140,7 @@ func (repository *Repository) Append(ctx context.Context, event Event) (AppendRe
 	if err := tx.Commit(ctx); err != nil {
 		return AppendReceipt{}, ErrAppend
 	}
-	return AppendReceipt{
-		sequence:          sequence,
-		eventHash:         eventHash,
-		backendAuthorized: event.EventType == EventRunStarted,
-	}, nil
+	return NewAppendReceipt(sequence, eventHash, event.EventType), nil
 }
 
 // ChainHead reads the current chain head through the approved checkpoint administration API.

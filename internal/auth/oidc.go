@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto"
+	"crypto/sha256"
 	"errors"
 	"strings"
 	"time"
@@ -53,14 +54,15 @@ type OIDCAuthenticatorConfig struct {
 
 // OIDCAuthenticator validates customer OIDC bearer JWTs and maps them to principals.
 type OIDCAuthenticator struct {
-	issuer     string
-	audience   string
-	groupClaim string
-	keys       PublicKeyProvider
-	store      OIDCPrincipalStore
-	logger     OIDCAuthenticationLogger
-	now        func() time.Time
-	leeway     time.Duration
+	issuer       string
+	issuerHash   [32]byte
+	audience     string
+	groupClaim   string
+	keys         PublicKeyProvider
+	store        OIDCPrincipalStore
+	logger       OIDCAuthenticationLogger
+	now          func() time.Time
+	leeway       time.Duration
 }
 
 // NewOIDCAuthenticator creates a fail-closed OIDC authenticator.
@@ -77,6 +79,7 @@ func NewOIDCAuthenticator(cfg OIDCAuthenticatorConfig) (*OIDCAuthenticator, erro
 	}
 	return &OIDCAuthenticator{
 		issuer:     cfg.Issuer,
+		issuerHash: sha256.Sum256([]byte(cfg.Issuer)),
 		audience:   cfg.Audience,
 		groupClaim: cfg.GroupClaim,
 		keys:       cfg.Keys,
@@ -158,9 +161,10 @@ func (authenticator *OIDCAuthenticator) AuthenticateOIDC(ctx context.Context, be
 	}
 
 	principal := Principal{
-		ID:         record.ID,
-		AuthMethod: AuthMethodOIDC,
-		Groups:     normalizedGroups,
+		ID:             record.ID,
+		AuthMethod:     AuthMethodOIDC,
+		Groups:         normalizedGroups,
+		OIDCIssuerHash: authenticator.issuerHash,
 	}
 	if principal.Validate() != nil {
 		return Principal{}, ErrUnauthenticated

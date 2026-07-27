@@ -34,6 +34,8 @@ type Principal struct {
 	AuthMethod     AuthMethod
 	APIKeyIDPrefix string
 	Groups         []string
+	// OIDCIssuerHash is SHA-256 of the configured issuer for OIDC principals; zero otherwise.
+	OIDCIssuerHash [32]byte
 }
 
 // Validate checks the bounded content-free principal contract.
@@ -43,12 +45,12 @@ func (principal Principal) Validate() error {
 	}
 	switch principal.AuthMethod {
 	case AuthMethodAPIKey:
-		if !apiKeyPrefixPattern.MatchString(principal.APIKeyIDPrefix) || principal.Groups == nil || len(principal.Groups) != 0 {
+		if !apiKeyPrefixPattern.MatchString(principal.APIKeyIDPrefix) || principal.Groups == nil || len(principal.Groups) != 0 || principal.OIDCIssuerHash != ([32]byte{}) {
 			return ErrInvalidPrincipal
 		}
 		return nil
 	case AuthMethodOIDC:
-		if principal.APIKeyIDPrefix != "" || !validOIDCGroups(principal.Groups) {
+		if principal.APIKeyIDPrefix != "" || !validOIDCGroups(principal.Groups) || principal.OIDCIssuerHash == ([32]byte{}) {
 			return ErrInvalidPrincipal
 		}
 		return nil
