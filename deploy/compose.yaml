@@ -12,6 +12,7 @@ services:
       GATEWAY_RUNTIME_PASSWORD_FILE: /run/secrets/gateway_runtime_password
       AUDIT_READER_PASSWORD_FILE: /run/secrets/audit_reader_password
       SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/security_admin_password
+    # Loopback-only publish. Do not bind 0.0.0.0.
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
     healthcheck:
@@ -27,6 +28,93 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # Fail closed: drop everything, then add only what Postgres needs.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    ulimits:
+      core: 0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service"
+    labels:
+      service: "postgres"
+
+  gateway:
+    profiles: ["gateway"]
+    build:
+      context: ..
+      dockerfile: deploy/gateway.Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    container_name: compliantai-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777,uid=65532,gid=65532
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ulimits:
+      core: 0
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8443}:8443"
+    environment:
+      COMPLIANTAI_CONFIG: /etc/compliantai/config.yaml
+      # Pin runtime DSN host to the compose service network name (not an external DB).
+      COMPLIANTAI_DATABASE_HOST: postgres
+    secrets:
+      - source: tls_private_key
+        target: tls-private-key
+      - source: content_hmac_key
+        target: content-hmac-key
+      - source: checkpoint_signing_key
+        target: checkpoint-signing-key
+      - source: gateway_runtime_password
+        target: gateway_runtime_password
+    volumes:
+      - type: bind
+        source: ${COMPLIANTAI_CONFIG_FILE:?set COMPLIANTAI_CONFIG_FILE}
+        target: /etc/compliantai/config.yaml
+        read_only: true
+      - type: bind
+        source: ${COMPLIANTAI_TLS_CERT_FILE:?set COMPLIANTAI_TLS_CERT_FILE}
+        target: /etc/compliantai/tls/server.crt
+        read_only: true
+    healthcheck:
+      test: ["CMD", "/gateway", "--version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service"
+    labels:
+      service: "gateway"
+    # Full TLS/DB bootstrap is a follow-up. Profile keeps default `up` to postgres-only
+    # so the stack does not crash-loop before process wiring lands.
+    command: ["--config", "/etc/compliantai/config.yaml"]
 
 volumes:
   postgres-data:
@@ -40,3 +128,9 @@ secrets:
     file: ${AUDIT_READER_PASSWORD_FILE:?set AUDIT_READER_PASSWORD_FILE}
   security_admin_password:
     file: ${SECURITY_ADMIN_PASSWORD_FILE:?set SECURITY_ADMIN_PASSWORD_FILE}
+  tls_private_key:
+    file: ${COMPLIANTAI_TLS_KEY_FILE:?set COMPLIANTAI_TLS_KEY_FILE}
+  content_hmac_key:
+    file: ${COMPLIANTAI_CONTENT_HMAC_KEY_FILE:?set COMPLIANTAI_CONTENT_HMAC_KEY_FILE}
+  checkpoint_signing_key:
+    file: ${COMPLIANTAI_CHECKPOINT_SIGNING_KEY_FILE:?set COMPLIANTAI_CHECKPOINT_SIGNING_KEY_FILE}

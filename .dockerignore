@@ -1,0 +1,25 @@
+# Keep secrets, local hermes state, and bulky trees out of image build context.
+.git
+.hermes
+**/.hermes
+**/*secret*
+**/*secrets*
+**/*.pem
+**/*.key
+**/id_rsa*
+**/id_ed25519*
+.env
+.env.*
+*.md
+!go.mod
+!go.sum
+docs
+tests
+.hermes/plans
+**/.DS_Store
+**/node_modules
+**/*.test
+bin
+dist
+cover*
+*.out
